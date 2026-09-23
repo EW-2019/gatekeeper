@@ -236,6 +236,33 @@ app.get('/cloud-admin-trigger-import', async (req, res) => {
   }
 });
 
+// --- ADMIN EXPORT DATA TRIGGER ---
+app.get('/cloud-admin-export-data', async (req, res) => {
+  try {
+    // Fetch all appointment entries from your cloud database
+    const result = await pool.query('SELECT * FROM appointments ORDER BY created_at DESC');
+    
+    if (result.rows.length === 0) {
+      return res.send('<h1>Export Report</h1><p>No appointment records found in database yet.</p>');
+    }
+
+    // Convert SQL JSON array rows into a standard raw CSV string format
+    const headers = Object.keys(result.rows[0]).join(',');
+    const csvRows = result.rows.map(row => 
+      Object.values(row).map(value => `"${String(value).replace(/"/g, '""')}"`).join(',')
+    );
+    const csvContent = [headers, ...csvRows].join('\n');
+
+    // Force the browser tab to download it as a real physical file on your laptop!
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename=appointments_cloud_export.csv');
+    res.status(200).send(csvContent);
+
+  } catch (err) {
+    res.status(500).send(`<h1>Export Failed</h1><pre>${err.message}</pre>`);
+  }
+});
+
 
 // --- SERVE BOTH REACT FRONTEND BUILDS ---
 
