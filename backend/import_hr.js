@@ -1,39 +1,40 @@
 require('dotenv').config();
 const fs = require('fs');
 const csv = require('csv-parser');
+const path = require('path');
 const pool = require('./db');
 
+// Change it to an exportable function
 async function importHR() {
   const client = await pool.connect();
   const results = [];
 
   try {
-    // 1. Read CSV file into memory
+    // Force path resolution to find the file inside the root folder cleanly
+    const csvPath = path.join(__dirname, 'hr_data.csv');
+    
     await new Promise((resolve, reject) => {
-      fs.createReadStream('hr_data.csv')
+      fs.createReadStream(csvPath)
         .pipe(csv())
         .on('data', (data) => results.push(data))
         .on('end', resolve)
         .on('error', reject);
     });
 
-    console.log(`Found ${results.length} total rows in hr_data.csv. Beginning DB transaction...`);
+    let logOutput = `Found ${results.length} total rows in hr_data.csv. Beginning DB transaction...\n`;
 
-    // 2. Wrap inserts in a transaction
     await client.query('BEGIN');
 
     let insertedCount = 0;
     let skippedCount = 0;
 
     for (const rawEmp of results) {
-      // Clean keys and values (strips whitespace and hidden BOM characters)
       const emp = {};
       for (const key in rawEmp) {
         const cleanKey = key.trim().replace(/^\uFEFF/, '');
         emp[cleanKey] = rawEmp[key] ? rawEmp[key].trim() : '';
       }
 
-      // Map CSV headers (hr_id -> employee_id, department -> rank)
       const empId = emp.hr_id || emp.employee_id || emp.id || emp.ID;
       const name = emp.name || emp.Name || '';
       const rank = emp.department || emp.rank || emp.Rank || '';
@@ -48,23 +49,22 @@ async function importHR() {
         insertedCount++;
       } else {
         skippedCount++;
-        console.warn(`Skipped invalid ID row: "${empId}" (Length must be exactly 8)`);
+        logOutput += `⚠️ Skipped invalid ID row: "${empId}" (Length must be exactly 8)\n`;
       }
     }
 
     await client.query('COMMIT');
-    console.log(`\nImport Summary:`);
-    console.log(`✅ Successfully committed to DB: ${insertedCount} records`);
-    console.log(`⚠️ Skipped rows: ${skippedCount} records`);
+    logOutput += `\nImport Summary:\n✅ Successfully committed to DB: ${insertedCount} records\n⚠️ Skipped rows: ${skippedCount} records`;
+    return { success: true, logOutput };
 
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error("❌ Import failed, transaction rolled back:", err);
+    return { success: false, logOutput: `❌ Import failed: ${err.message}` };
   } finally {
     client.release();
-    await pool.end();
-    process.exit(0);
+    // REMOVED pool.end() and process.exit() so your server doesn't die!
   }
 }
 
-importHR();
+// Export it so server.js can see it
+module.exports = { importHR };
