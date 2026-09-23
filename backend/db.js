@@ -1,19 +1,18 @@
 require('dotenv').config();
 const { Pool } = require('pg');
+const fs = require('fs');
+const path = require('path');
+const csv = require('csv-parser');
 
-// Check if we are running on Render (which uses DATABASE_URL)
 const connectionString = process.env.DATABASE_URL;
 
 const pool = new Pool({
-  // If DATABASE_URL exists, use it. Otherwise, use your local configuration fallback.
   connectionString: connectionString || undefined,
   user: connectionString ? undefined : (process.env.PGUSER || 'postgres'),
   host: connectionString ? undefined : (process.env.PGHOST || 'localhost'),
   database: connectionString ? undefined : (process.env.PGDATABASE || 'reception_db'),
   password: connectionString ? undefined : (process.env.PGPASSWORD || '199321'),
   port: connectionString ? undefined : (parseInt(process.env.PGPORT, 10) || 5432),
-  
-  // CRUCIAL FOR RENDER: Free cloud databases strictly require SSL encryption
   ssl: connectionString ? { rejectUnauthorized: false } : false
 });
 
@@ -21,6 +20,8 @@ const initDb = async () => {
   let client;
   try {
     client = await pool.connect();
+    
+    // 1. GUARANTEE TABLES ARE CREATED FIRST
     await client.query(`
       CREATE TABLE IF NOT EXISTS hr_employees (
         employee_id VARCHAR(8) PRIMARY KEY,
@@ -48,8 +49,51 @@ const initDb = async () => {
       );
     `);
     console.log("[DB] Database schema initialized successfully.");
+
+    // 2. RUN AUTO-IMPORT IMMEDIATELY AFTER TABLES ARE READY
+    const csvPath = path.join(__dirname, 'hr_data.csv');
+    if (fs.existsSync(csvPath)) {
+      const results = [];
+      await new Promise((resolve, reject) => {
+        fs.createReadStream(csvPath)
+          .pipe(csv())
+          .on('data', (data) => results.push(data))
+          .on('end', resolve)
+          .on('error', reject);
+      });
+
+      console.log(`[DB-AUTO-IMPORT] Found ${results.length} rows in hr_data.csv. Syncing...`);
+      await client.query('BEGIN');
+
+      for (const rawEmp of results) {
+        const emp = {};
+        for (const key in rawEmp) {
+          const cleanKey = key.trim().replace(/^\uFEFF/, '');
+          emp[cleanKey] = rawEmp[key] ? rawEmp[key].trim() : '';
+        }
+
+        const empId = emp.hr_id || emp.employee_id || emp.id || emp.ID;
+        const name = emp.name || emp.Name || '';
+        const rank = emp.department || emp.rank || emp.Rank || '';
+
+        if (empId && empId.length === 8) {
+          await client.query(
+            `INSERT INTO hr_employees (employee_id, name, rank) 
+             VALUES ($1, $2, $3) 
+             ON CONFLICT (employee_id) DO UPDATE SET name = EXCLUDED.name, rank = EXCLUDED.rank`,
+            [empId, name, rank]
+          );
+        }
+      }
+      await client.query('COMMIT');
+      console.log(`[DB-AUTO-IMPORT] System verified. HR data synced successfully!`);
+    } else {
+      console.log(`[DB-AUTO-IMPORT] Warning: hr_data.csv not found at ${csvPath}`);
+    }
+
   } catch (err) {
-    console.error("[DB] Error initializing database:", err.message);
+    if (client) await client.query('ROLLBACK').catch(() => {});
+    console.error("[DB] Error initializing database or importing CSV:", err.message);
   } finally {
     if (client) client.release();
   }
