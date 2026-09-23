@@ -220,6 +220,20 @@ app.delete('/api/chat/messages', async (req, res) => {
   }
 });
 
+// --- PRIVATE ADMIN SCRIPTS BYPASS ---
+const { exec } = require('child_process');
+
+// URL to execute your HR Data Import in the cloud
+app.get('/cloud-admin-trigger-import', (req, res) => {
+  exec('node import_hr.js', (error, stdout, stderr) => {
+    if (error) {
+      return res.status(500).json({ error: error.message, details: stderr });
+    }
+    res.json({ message: "Import script finished executing successfully!", output: stdout });
+  });
+});
+
+
 // --- SERVE BOTH REACT FRONTEND BUILDS ---
 
 // 1. Appointer Web Dashboard (/appointer)
