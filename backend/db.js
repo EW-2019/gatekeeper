@@ -1,3 +1,14 @@
+require('dotenv').config();
+const { Pool } = require('pg');
+
+const pool = new Pool({
+  user: process.env.PGUSER || 'postgres',
+  host: process.env.PGHOST || 'localhost',
+  database: process.env.PGDATABASE || 'reception_db',
+  password: process.env.PGPASSWORD || '199321',
+  port: parseInt(process.env.PGPORT, 10) || 5432,
+});
+
 const initDb = async () => {
   let client;
   try {
@@ -27,18 +38,15 @@ const initDb = async () => {
         checked_in_at TIMESTAMP,
         expires_at TIMESTAMP
       );
-
-      CREATE TABLE IF NOT EXISTS gate_messages (
-        id SERIAL PRIMARY KEY,
-        sender VARCHAR(50) NOT NULL,
-        message TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
     `);
-    console.log("[DB] Database schema initialized successfully (hr_employees, appointments, gate_messages).");
+    console.log("[DB] Database schema initialized successfully.");
   } catch (err) {
     console.error("[DB] Error initializing database:", err.message);
   } finally {
     if (client) client.release();
   }
 };
+
+initDb();
+
+module.exports = pool;
