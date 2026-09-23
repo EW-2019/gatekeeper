@@ -220,17 +220,20 @@ app.delete('/api/chat/messages', async (req, res) => {
   }
 });
 
-// --- PRIVATE ADMIN SCRIPTS BYPASS ---
-const { exec } = require('child_process');
+// --- PRIVATE ADMIN TRIGGER ROUTE ---
+const { importHR } = require('./import_hr');
 
-// URL to execute your HR Data Import in the cloud
-app.get('/cloud-admin-trigger-import', (req, res) => {
-  exec('node import_hr.js', (error, stdout, stderr) => {
-    if (error) {
-      return res.status(500).json({ error: error.message, details: stderr });
+app.get('/cloud-admin-trigger-import', async (req, res) => {
+  try {
+    const result = await importHR();
+    if (result.success) {
+      res.send(`<h1>Import Complete!</h1><pre>${result.logOutput}</pre>`);
+    } else {
+      res.status(500).send(`<h1>Import Failed</h1><pre>${result.logOutput}</pre>`);
     }
-    res.json({ message: "Import script finished executing successfully!", output: stdout });
-  });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 
