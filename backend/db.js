@@ -1,12 +1,20 @@
 require('dotenv').config();
 const { Pool } = require('pg');
 
+// Check if we are running on Render (which uses DATABASE_URL)
+const connectionString = process.env.DATABASE_URL;
+
 const pool = new Pool({
-  user: process.env.PGUSER || 'postgres',
-  host: process.env.PGHOST || 'localhost',
-  database: process.env.PGDATABASE || 'reception_db',
-  password: process.env.PGPASSWORD || '199321',
-  port: parseInt(process.env.PGPORT, 10) || 5432,
+  // If DATABASE_URL exists, use it. Otherwise, use your local configuration fallback.
+  connectionString: connectionString || undefined,
+  user: connectionString ? undefined : (process.env.PGUSER || 'postgres'),
+  host: connectionString ? undefined : (process.env.PGHOST || 'localhost'),
+  database: connectionString ? undefined : (process.env.PGDATABASE || 'reception_db'),
+  password: connectionString ? undefined : (process.env.PGPASSWORD || '199321'),
+  port: connectionString ? undefined : (parseInt(process.env.PGPORT, 10) || 5432),
+  
+  // CRUCIAL FOR RENDER: Free cloud databases strictly require SSL encryption
+  ssl: connectionString ? { rejectUnauthorized: false } : false
 });
 
 const initDb = async () => {
