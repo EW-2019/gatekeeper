@@ -1,0 +1,32 @@
+cd backend
+npm install
+npm run import-hr
+npm start
+
+cd guard-desktop
+npm install
+npm start
+
+
+
+cd guard-desktop
+npm run build
+
+cd backend
+npm start
+
+cd ../backend
+npm install
+npm run import-hr   # Run once to import 8-digit HR IDs
+npm start
+
+psql -U postgres
+
+CREATE DATABASE reception_db;
+
+cd backend
+npm start
+
+guard-desktop/build -> copied to backend/build
+
+appointer-web/build -> copied to backend/build-appointer

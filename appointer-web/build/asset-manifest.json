@@ -1,0 +1,13 @@
+{
+  "files": {
+    "main.css": "/appointer/static/css/main.e42c3405.css",
+    "main.js": "/appointer/static/js/main.b783507c.js",
+    "index.html": "/appointer/index.html",
+    "main.e42c3405.css.map": "/appointer/static/css/main.e42c3405.css.map",
+    "main.b783507c.js.map": "/appointer/static/js/main.b783507c.js.map"
+  },
+  "entrypoints": [
+    "static/css/main.e42c3405.css",
+    "static/js/main.b783507c.js"
+  ]
+}
