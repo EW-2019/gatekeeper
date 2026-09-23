@@ -47,6 +47,14 @@ const initDb = async () => {
         checked_in_at TIMESTAMP,
         expires_at TIMESTAMP
       );
+
+      CREATE TABLE IF NOT EXISTS gate_messages (
+        id SERIAL PRIMARY KEY,
+        sender VARCHAR(50) NOT NULL,
+        message TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+      
     `);
     console.log("[DB] Database schema initialized successfully.");
 
