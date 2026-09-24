@@ -20,7 +20,7 @@ const initDb = async () => {
   let client;
   try {
     client = await pool.connect();
-    
+
     // 1. GUARANTEE TABLES ARE CREATED FIRST
     await client.query(`
       CREATE TABLE IF NOT EXISTS hr_employees (
@@ -42,10 +42,12 @@ const initDb = async () => {
         classification VARCHAR(20) CHECK (classification IN ('classified', 'unclassified')),
         stay_duration_type VARCHAR(10) CHECK (stay_duration_type IN ('hours', 'days')),
         stay_duration_value INT NOT NULL,
-        status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'checked_in', 'expired')),
+        status VARCHAR(20) DEFAULT 'pending'
+          CHECK (status IN ('pending','checked_in','expired','stored','cancelled','dismissed')),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         checked_in_at TIMESTAMP,
-        expires_at TIMESTAMP
+        expires_at TIMESTAMP,
+        stored_at TIMESTAMP
       );
 
       CREATE TABLE IF NOT EXISTS gate_messages (
@@ -54,11 +56,40 @@ const initDb = async () => {
         message TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
-      
+
+      CREATE TABLE IF NOT EXISTS system_out (
+        id SERIAL PRIMARY KEY,
+        appointer_id VARCHAR(8) NOT NULL,
+        appointer_name VARCHAR(100) NOT NULL,
+        appointer_rank VARCHAR(50) NOT NULL,
+        appointer_phone VARCHAR(20) NOT NULL,
+        system_name TEXT NOT NULL,
+        car_plate VARCHAR(20),
+        status VARCHAR(20) DEFAULT 'pending'
+          CHECK (status IN ('pending','verified','sent','stored','cancelled')),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        verified_at TIMESTAMP,
+        sent_at TIMESTAMP,
+        stored_at TIMESTAMP
+      );
     `);
+
+    // 2. SAFE MIGRATION — fix any old CHECK constraint on appointments
+    await client.query(`
+      ALTER TABLE appointments DROP CONSTRAINT IF EXISTS appointments_status_check;
+      ALTER TABLE appointments ADD CONSTRAINT appointments_status_check
+        CHECK (status IN ('pending','checked_in','expired','stored','cancelled','dismissed'));
+    `);
+
+    // 3. SAFE MIGRATION — add stored_at column if it doesn't exist yet
+    await client.query(`
+      ALTER TABLE appointments ADD COLUMN IF NOT EXISTS stored_at TIMESTAMP;
+      ALTER TABLE system_out ADD COLUMN IF NOT EXISTS stored_at TIMESTAMP;
+    `);
+
     console.log("[DB] Database schema initialized successfully.");
 
-    // 2. RUN AUTO-IMPORT IMMEDIATELY AFTER TABLES ARE READY
+    // 4. AUTO-IMPORT HR CSV
     const csvPath = path.join(__dirname, 'hr_data.csv');
     if (fs.existsSync(csvPath)) {
       const results = [];
@@ -86,8 +117,8 @@ const initDb = async () => {
 
         if (empId && empId.length === 8) {
           await client.query(
-            `INSERT INTO hr_employees (employee_id, name, rank) 
-             VALUES ($1, $2, $3) 
+            `INSERT INTO hr_employees (employee_id, name, rank)
+             VALUES ($1, $2, $3)
              ON CONFLICT (employee_id) DO UPDATE SET name = EXCLUDED.name, rank = EXCLUDED.rank`,
             [empId, name, rank]
           );
@@ -100,7 +131,7 @@ const initDb = async () => {
     }
 
   } catch (err) {
-    if (client) await client.query('ROLLBACK').catch(() => {});
+    if (client) await client.query('ROLLBACK').catch(() => { });
     console.error("[DB] Error initializing database or importing CSV:", err.message);
   } finally {
     if (client) client.release();
