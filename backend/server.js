@@ -83,19 +83,36 @@ app.post('/api/appointments', async (req, res) => {
   }
 });
 
-// 3. Get Guard View (Omits detailed reason field; excludes expired/dismissed/cancelled)
+// 3. Get Guard View (pending + checked_in + stored)
 app.get('/api/guard/appointments', async (req, res) => {
   try {
     await updateExpirations();
+
     const active = await pool.query(
-      `SELECT id, appointer_name, appointer_rank, appointer_phone, guest_name, guest_rank, guest_phone, classification, stay_duration_type, stay_duration_value, created_at 
+      `SELECT id, appointer_name, appointer_rank, appointer_phone, guest_name, guest_rank, guest_phone,
+              classification, stay_duration_type, stay_duration_value, status, created_at
        FROM appointments WHERE status = 'pending' ORDER BY created_at DESC`
     );
+
     const checkedIn = await pool.query(
-      `SELECT id, appointer_name, appointer_rank, appointer_phone, guest_name, guest_rank, guest_phone, classification, stay_duration_type, stay_duration_value, checked_in_at, expires_at 
-       FROM appointments WHERE status = 'checked_in' ORDER BY checked_in_at DESC`
+      `SELECT id, appointer_name, appointer_rank, appointer_phone, guest_name, guest_rank, guest_phone,
+              classification, stay_duration_type, stay_duration_value, status,
+              checked_in_at, expires_at, created_at
+       FROM appointments WHERE status IN ('checked_in','expired') ORDER BY checked_in_at DESC`
     );
-    res.json({ active: active.rows, checkedIn: checkedIn.rows });
+
+    const stored = await pool.query(
+      `SELECT id, appointer_name, appointer_rank, appointer_phone, guest_name, guest_rank, guest_phone,
+              classification, stay_duration_type, stay_duration_value, status,
+              checked_in_at, expires_at, stored_at
+       FROM appointments WHERE status = 'stored' ORDER BY stored_at DESC NULLS LAST`
+    );
+
+    res.json({
+      active: active.rows,
+      checkedIn: checkedIn.rows,
+      stored: stored.rows
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -220,6 +237,254 @@ app.delete('/api/chat/messages', async (req, res) => {
   }
 });
 
+// =========================================================
+//  SYSTEM OUT ROUTES (Appointer creates/edits → Command verifies → Guard sees)
+// =========================================================
+
+// Appointer polls his own non-sent, non-cancelled system-out items
+app.get('/api/system-out', async (req, res) => {
+  const { appointer_id } = req.query;
+  try {
+    if (!appointer_id) {
+      return res.status(400).json({ error: 'appointer_id required' });
+    }
+    const result = await pool.query(
+      `SELECT * FROM system_out
+       WHERE appointer_id = $1 AND status IN ('pending','verified')
+       ORDER BY created_at DESC`,
+      [appointer_id]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create new system-out request
+app.post('/api/system-out', async (req, res) => {
+  const {
+    appointer_id, appointer_name, appointer_rank, appointer_phone,
+    system_name, car_plate
+  } = req.body;
+
+  try {
+    const hrCheck = await pool.query(
+      'SELECT * FROM hr_employees WHERE employee_id = $1',
+      [appointer_id]
+    );
+    if (hrCheck.rows.length === 0) {
+      return res.status(403).json({ error: 'Unauthorized Appointer ID' });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO system_out
+        (appointer_id, appointer_name, appointer_rank, appointer_phone, system_name, car_plate)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [appointer_id, appointer_name, appointer_rank, appointer_phone, system_name, car_plate || null]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Edit a pending system-out request
+app.put('/api/system-out/:id', async (req, res) => {
+  const { id } = req.params;
+  const { appointer_phone, system_name, car_plate } = req.body;
+  try {
+    const check = await pool.query('SELECT status FROM system_out WHERE id = $1', [id]);
+    if (check.rows.length === 0) return res.status(404).json({ error: 'Not found' });
+    if (check.rows[0].status !== 'pending') {
+      return res.status(403).json({ error: 'Only pending items can be edited' });
+    }
+    const result = await pool.query(
+      `UPDATE system_out
+       SET appointer_phone = COALESCE($1, appointer_phone),
+           system_name     = COALESCE($2, system_name),
+           car_plate       = $3
+       WHERE id = $4 RETURNING *`,
+      [appointer_phone, system_name, car_plate || null, id]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Hard delete a pending system-out request
+app.delete('/api/system-out/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const check = await pool.query('SELECT status FROM system_out WHERE id = $1', [id]);
+    if (check.rows.length === 0) return res.status(404).json({ error: 'Not found' });
+    if (check.rows[0].status !== 'pending') {
+      return res.status(403).json({ error: 'Only pending items can be deleted' });
+    }
+    await pool.query('DELETE FROM system_out WHERE id = $1', [id]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Cancel a pending system-out request (soft)
+app.post('/api/system-out/cancel/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const check = await pool.query('SELECT status FROM system_out WHERE id = $1', [id]);
+    if (check.rows.length === 0) return res.status(404).json({ error: 'Not found' });
+    if (check.rows[0].status !== 'pending') {
+      return res.status(403).json({ error: 'Only pending items can be cancelled' });
+    }
+    const result = await pool.query(
+      `UPDATE system_out SET status = 'cancelled' WHERE id = $1 RETURNING *`,
+      [id]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Send a verified item to the guard
+app.post('/api/system-out/send/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const check = await pool.query('SELECT status FROM system_out WHERE id = $1', [id]);
+    if (check.rows.length === 0) return res.status(404).json({ error: 'Not found' });
+    if (check.rows[0].status !== 'verified') {
+      return res.status(403).json({ error: 'Item must be verified before sending' });
+    }
+    const result = await pool.query(
+      `UPDATE system_out SET status = 'sent', sent_at = NOW() WHERE id = $1 RETURNING *`,
+      [id]
+    );
+    io.emit('system_out_sent', result.rows[0]);
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Command mobile: fetch all pending system-out requests for review
+app.get('/api/system-out/pending', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT * FROM system_out WHERE status = 'pending' ORDER BY created_at DESC`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Command mobile: verify a pending item
+app.post('/api/system-out/verify/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const check = await pool.query('SELECT status FROM system_out WHERE id = $1', [id]);
+    if (check.rows.length === 0) return res.status(404).json({ error: 'Not found' });
+    if (check.rows[0].status !== 'pending') {
+      return res.status(403).json({ error: 'Only pending items can be verified' });
+    }
+    const result = await pool.query(
+      `UPDATE system_out SET status = 'verified', verified_at = NOW() WHERE id = $1 RETURNING *`,
+      [id]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =========================================================
+//  GUARD STORE ROUTES (guests + system-out)
+// =========================================================
+
+// Guard: move a guest to store
+app.post('/api/guard/store/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query(
+      `UPDATE appointments SET status = 'stored', stored_at = NOW() WHERE id = $1 RETURNING *`,
+      [id]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Not found' });
+    io.emit('status_change', result.rows[0]);
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Guard: delete one stored guest
+app.delete('/api/guard/stored/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    await pool.query(`DELETE FROM appointments WHERE id = $1 AND status = 'stored'`, [id]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Guard: clear all stored guests
+app.delete('/api/guard/stored', async (req, res) => {
+  try {
+    await pool.query(`DELETE FROM appointments WHERE status = 'stored'`);
+    io.emit('store_cleared');
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =========================================================
+//  GUARD — system-out (all sent OR stored)
+// =========================================================
+
+app.get('/api/guard/system-out', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT * FROM system_out
+       WHERE status IN ('sent','stored')
+       ORDER BY sent_at DESC NULLS LAST`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Guard: archive a system-out item (moves to stored — no wait page)
+app.post('/api/guard/system-out/store/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query(
+      `UPDATE system_out SET status = 'stored', stored_at = NOW()
+       WHERE id = $1 RETURNING *`,
+      [id]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Not found' });
+    io.emit('system_out_stored', result.rows[0]);
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Guard: delete one stored system-out
+app.delete('/api/guard/system-out/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    await pool.query(`DELETE FROM system_out WHERE id = $1 AND status = 'stored'`, [id]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // --- PRIVATE ADMIN TRIGGER ROUTE ---
 const { importHR } = require('./import_hr');
 
@@ -241,14 +506,14 @@ app.get('/cloud-admin-export-data', async (req, res) => {
   try {
     // Fetch all appointment entries from your cloud database
     const result = await pool.query('SELECT * FROM appointments ORDER BY created_at DESC');
-    
+
     if (result.rows.length === 0) {
       return res.send('<h1>Export Report</h1><p>No appointment records found in database yet.</p>');
     }
 
     // Convert SQL JSON array rows into a standard raw CSV string format
     const headers = Object.keys(result.rows[0]).join(',');
-    const csvRows = result.rows.map(row => 
+    const csvRows = result.rows.map(row =>
       Object.values(row).map(value => `"${String(value).replace(/"/g, '""')}"`).join(',')
     );
     const csvContent = [headers, ...csvRows].join('\n');
